@@ -1,4 +1,4 @@
-# River Flow Prediction – Discharge Forecasting for River Kabul at Nowshera Bridge
+# River Streamflow Prediction – Discharge Forecasting for River Kabul at Nowshera Bridge
 
 This project focuses on predicting river water discharge for River Kabul at the Nowshera Bridge using key hydrological parameters, specifically rainfall and temperature. It evaluates and compares various machine learning algorithms and identifies the most suitable model for accurate discharge forecasting.
 
