@@ -7,7 +7,7 @@ This project focuses on predicting river water discharge for River Kabul at the 
 This work has been carried out as part of a BS (Computer Science) research project by the following students at the University of Engineering & Technology (UET), Peshawar:
 
 - **Naqeeb Ullah**
-- **Muhammad Omais Ahmad Khan**
+- **Omais Ahmad Khan**
 - **Muhammad Zohaib**
 
 ## Research Supervision
