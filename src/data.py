@@ -6,11 +6,11 @@ from sklearn.neighbors import KNeighborsRegressor
 # Load data with error handling
 def load_data():
     try:
-        df = pd.read_excel('data/raw/data of fyp.xlsx')  # Use forward slashes for consistency
+        df = pd.read_excel('data/raw/flood_data.xlsx')  # Use forward slashes for consistency
         print("Data loaded successfully.")
         return df
     except FileNotFoundError:
-        print("Error: 'data/raw/data of fyp.xlsx' not found. Please upload the file to the data/raw folder.")
+        print("Error: 'data/raw/flood_data.xlsx' not found. Please upload the file to the data/raw folder.")
         return None
     except Exception as e:
         print(f"Error loading data: {e}")
