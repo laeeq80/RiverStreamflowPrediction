@@ -1,76 +1,69 @@
+"""Clean the raw Kabul River daily data (Nowshera, 2012-2021).
+
+Reads  data/flood_data.xlsx
+Writes data/flood_clean_data.csv
+
+Cleaning steps, each confirmed against the raw file:
+  1. Maximum/Minimum_Temperature: some cells are numbers followed by a
+     non-breaking space; the whitespace is stripped.
+  2. Rainfall: 271 entries are written as text (trace / Trace / TRACE / Tr /
+     TR). A trace amount is set to 0.05 mm.
+  3. Average_Temperature: in the sheet this is =AVERAGE(max, min). Excel skips
+     cells stored as text, so on the 15 days where a temperature was text the
+     "average" is just the other temperature. It is recomputed as (max+min)/2.
+Any other unreadable value raises an error instead of being repaired.
+"""
 from pathlib import Path
+
 import pandas as pd
-#import seaborn as sns
-#import numpy as np
-#import matplotlib.pyplot as plt
 
-# Get the project root (the parent of src)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+RAW_PATH = PROJECT_ROOT / "data" / "flood_data.xlsx"
+CLEAN_PATH = PROJECT_ROOT / "data" / "flood_clean_data.csv"
 
-# Build the absolute path to the Excel file
-DATA_PATH = PROJECT_ROOT / "data" / "flood_data.xlsx"
+TRACE_LABELS = {"trace", "tr"}
+TRACE_MM = 0.05
+TEMP_COLS = ["Maximum_Temperature", "Minimum_Temperature"]
 
-df = pd.read_excel(DATA_PATH)
 
-print(f"Loaded data from: {DATA_PATH}")
+def clean(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
 
-# To detect the problem in data, we only need the numeric value in that column
-mask = pd.to_numeric(df["Water_Discharge"], errors='coerce').isna() & df["Water_Discharge"].notna()
-problematic = df.loc[mask, "Water_Discharge"]
-print(problematic.unique())# see unique problem values
+    for col in TEMP_COLS:
+        df[col] = pd.to_numeric(df[col].astype(str).str.strip())
 
-# Here we check the unneccessory values in the column of Minimum Temperature
-mask = pd.to_numeric(df["Minimum_Temperature"], errors='coerce').isna() & df["Minimum_Temperature"].notna()
-problematic = df.loc[mask, "Minimum_Temperature"]
-# Show row numbers with values
-print("The problematic values in the feature Minimum_Temperature are \n", problematic.to_string(),"\n")
+    sheet_avg = df["Average_Temperature"]
+    df["Average_Temperature"] = ((df["Maximum_Temperature"]
+                                  + df["Minimum_Temperature"]) / 2).round(2)
+    changed = (df["Average_Temperature"] - sheet_avg).abs() > 0.01
+    print(f"Average_Temperature recomputed, rows that changed: {changed.sum()}")
 
-# here also check the unneccessory values in the column of Maximum Temperature
-mask = pd.to_numeric(df["Maximum_Temperature"], errors='coerce').isna() & df["Maximum_Temperature"].notna()
-problematic = df.loc[mask, "Maximum_Temperature"]
-print("The problematic values in the feature Maximum_Temperature are \n", problematic.to_string(),"\n")# see first 20 unique problem values
+    rain = df["Rainfall"].astype(str).str.strip().str.lower()
+    is_trace = rain.isin(TRACE_LABELS)
+    df["Rainfall"] = pd.to_numeric(rain.mask(is_trace, str(TRACE_MM)))
+    print(f"Trace rainfall entries set to {TRACE_MM} mm: {is_trace.sum()}")
 
-# here also check the unneccessory values in the column of Rainfall
-mask = pd.to_numeric(df["Rainfall"], errors='coerce').isna() & df["Rainfall"].notna()
-problematic = df.loc[mask, "Rainfall"]
-print("The problematic values in the feature Rainfall are \n",problematic.to_string(),"\n") # see first 20 unique problem values
+    return df
 
-# Replace non-numeric Rainfall values (found in previous cell) with 0.05
-# Recreate the same mask
-mask = pd.to_numeric(df["Rainfall"], errors='coerce').isna() & df["Rainfall"].notna()
 
-# Replace problematic values with 0.05
-df.loc[mask, "Rainfall"] = 0.05
+def check(df: pd.DataFrame) -> None:
+    """Stop if the series has gaps, duplicates or missing values."""
+    if df.isna().any().any():
+        raise ValueError("Missing values found:\n" + str(df.isna().sum()))
 
-# Convert the column to numeric type
-df["Rainfall"] = pd.to_numeric(df["Rainfall"])
+    days = df["Date"].sort_values()
+    full_range = pd.date_range(days.min(), days.max(), freq="D")
+    if not days.is_unique or len(full_range) != len(days):
+        raise ValueError("Dates are duplicated or the daily record has gaps")
 
-def clean_temperature_column(series):
-    # Convert to string
-    s = series.astype(str)
 
-    # Replace non-breaking spaces (\xa0), normal spaces, and other invisible chars
-    s = s.str.replace(u'\xa0', '', regex=False)
-    s = s.str.replace(' ', '', regex=False)
-    s = s.str.replace('\t', '', regex=False)
+def main() -> None:
+    df = pd.read_excel(RAW_PATH)
+    df = clean(df)
+    check(df)
+    df.to_csv(CLEAN_PATH, index=False)
+    print(f"{len(df)} rows saved to {CLEAN_PATH}")
 
-    # Remove any non-numeric characters except digits, dot, or minus
-    s = s.str.replace(r'[^0-9\.\-]', '', regex=True)
 
-    # Convert to float safely
-    return pd.to_numeric(s, errors='coerce')
-
-# Apply to your numeric columns
-cols = ["Maximum_Temperature","Minimum_Temperature","Water_Discharge"]
-for c in cols:
-    df[c] = clean_temperature_column(df[c])
-
-df=df.dropna(subset=['Minimum_Temperature']) #Removing rows with NaN in them, i.e. we converted text to NaN. We only want numeric values
-
-df['Rainfall']=df['Rainfall'].fillna(0.05)# we fill the Null values with 0.05 replacing the string Trace which means a very low value
-
-# Save the preprocessed dataset as a CSV file
-OUTPUT_PATH = PROJECT_ROOT / "data" / "flood_clean_data.csv"
-df.to_csv(OUTPUT_PATH, index=False)
-
-print(f"Preprocessed data saved to: {OUTPUT_PATH}")
+if __name__ == "__main__":
+    main()
