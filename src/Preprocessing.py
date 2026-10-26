@@ -1,4 +1,6 @@
-"""Clean the raw Kabul River daily data (Nowshera, 2012-2021).
+"""
+Preprocessing
+Clean the raw Kabul River daily data (Nowshera, 2012-2021).
 
 Reads  data/flood_data.xlsx
 Writes data/flood_clean_data.csv
