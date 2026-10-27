@@ -9,3 +9,4 @@ openpyxl
 xgboost
 ipykernel
 juoblib
+keras
