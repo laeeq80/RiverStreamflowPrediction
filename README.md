@@ -1,75 +1,45 @@
-# River Streamflow Prediction – Discharge Forecasting for River Kabul at Nowshera Bridge
+# River Streamflow Prediction
 
-This project focuses on predicting river water discharge for River Kabul at the Nowshera Bridge using key hydrological parameters, specifically rainfall and temperature. It evaluates and compares various machine learning algorithms and identifies the most suitable model for accurate discharge forecasting.
+Comparison of Random Forest, XGBoost, SVM, Ridge Regression, ANN and LSTM for
+daily water discharge of the Kabul River at Nowshera (2012-2021).
 
-## Student Contributors
+## Layout
 
-This work has been carried out as part of a BS (Computer Science) research project by the following students at the University of Engineering & Technology (UET), Peshawar:
+```
+data/flood_data.xlsx      raw data (input)
+src/
+  config.py               paths and settings shared by all scripts
+  Preprocessing.py        raw Excel -> data/flood_clean_data.csv
+  EDA.py                  plots of the clean data -> result/eda_plots/
+  feature_generation.py   day-of-year features -> data/features.csv; make_lags()
+  feature_plots.py        plot of the day-of-year features
+  modelling.py            the six models, metrics, compare_models()
+  reporting.py            result tables and figures
+  Experiment1.py          six models without lag features
+  pipeline.py             runs the stages above in order
+result/                   created when the scripts run
+```
 
-- **Naqeeb Ullah**
-- **Omais Ahmad Khan**
-- **Muhammad Zohaib**
+`modelling.py` and `reporting.py` do not read or write the project files. The
+experiment scripts load the data, choose the settings and call them.
 
-## Research Supervision
+## Running
 
-The project was guided and supervised by:
+Run from the `src` folder (in PyCharm, mark `src` as Sources Root).
 
-**Dr. Laeeq Ahmed**  
-Assistant Professor, Department of Computer Science  
-UET Peshawar, Pakistan  
-PhD in Computational Science and Technology, KTH, Sweden  
-[laeeq80@gmail.com](mailto:laeeq80@gmail.com)  
-[LinkedIn](https://linkedin.com/in/laeeq-ahmed)  
-[Google Scholar](https://scholar.google.com/citations?user=vNyxFscAAAAJ&hl=en)
+```
+python pipeline.py                       # preprocess, eda, features, feature_plots
+python pipeline.py --steps experiment1   # trains models, a few minutes
+python pipeline.py --steps all
 
-> _Note: Dr. Laeeq Ahmed served as the **Research Lead** for this project.
+python Experiment1.py                    # defaults from config.py
+python Experiment1.py --seeds 42 21 --models ridge rf
+```
 
----
+Models for `--models`: rf, xgb, svm, ridge, ann, lstm.
 
-## Project Summary
+## Setup
 
-The objective of this project is to develop a predictive model for forecasting river discharge based on meteorological inputs. Key features include:
-
-- Input Parameters: **Rainfall** and **Temperature**
-- Output: **Predicted Discharge (m³/s)** at the Nowshera Bridge
-- Algorithms Analyzed: Multiple machine learning models were implemented and compared.
-- **Findings**: Among all tested algorithms, the **Artificial Neural Network (ANN)** outperformed others in terms of prediction accuracy.
-
----
-
-## Technologies & Tools
-
-- Python 3.x
-- pandas, numpy
-- scikit-learn
-- matplotlib, seaborn, joblib
-- Keras (for ANN modeling)
-- Jupyter Notebook / vsCode
-
-
----
-
-## 🚀 Getting Started
-
-### Clone the Repository
-
-```bash
-git clone https://github.com/laeeq80/riverFlowPrediction.git
-cd riverFlowPrediction
-
-Open project in an IDE e.g. vsCode and run the current file.
-
-## Results Summary
-Algorithms Evaluated: Linear Regression, Decision Trees, Random Forest, Support Vector Regression, Artificial Neural Networks
-
-Performance Metrics: RMSE, R², MAE
-
-Best Model: ANN demonstrated the highest accuracy and reliability for river discharge prediction
-
-## License
-This repository is provided for academic and educational purposes only. Reuse or adaptation for other projects should properly acknowledge the student authors and supervising faculty.
-
-## Contact
-For questions or collaboration inquiries:
-
-Dr. Laeeq Ahmed – laeeq80@gmail.com
+```
+pip install -r requirements.txt
+```

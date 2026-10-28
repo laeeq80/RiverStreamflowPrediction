@@ -1,12 +1,9 @@
-pandas
 numpy
-scikit-learn
+pandas
+openpyxl
 matplotlib
 seaborn
-joblib
-tensorflow
-openpyxl
+scikit-learn
 xgboost
-ipykernel
-juoblib
+tensorflow
 keras

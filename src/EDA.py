@@ -1,7 +1,7 @@
 """Exploratory plots for the cleaned Kabul River data (Nowshera, 2012-2021).
 
 Reads  data/flood_clean_data.csv
-Writes result/eda_plots/*.png and a summary table of the variables.
+Writes result/eda_plots/*.png and result/data_summary.csv
 
 The data is only read here, never changed. Month is taken from the Date
 column when a plot needs it and is not stored in the dataframe.
@@ -16,13 +16,10 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_PATH = PROJECT_ROOT / "data" / "flood_clean_data.csv"
-PLOT_DIR = PROJECT_ROOT / "result" / "eda_plots"
+import config
 
 MONTHS = range(1, 13)
 MONTH_LABELS = calendar.month_abbr[1:13]
-DPI = 300
 
 LABELS = {
     "Maximum_Temperature": "Maximum temperature (°C)",
@@ -31,9 +28,9 @@ LABELS = {
 }
 
 
-def save(fig: plt.Figure, name: str) -> None:
+def save(fig: plt.Figure, plot_dir: Path, name: str) -> None:
     fig.tight_layout()
-    fig.savefig(PLOT_DIR / name, dpi=DPI, bbox_inches="tight")
+    fig.savefig(plot_dir / name, dpi=config.FIGURE_DPI, bbox_inches="tight")
     plt.close(fig)
     print(f"saved {name}")
 
@@ -44,7 +41,7 @@ def month_axis(ax: plt.Axes) -> None:
     ax.set_xlabel("Month")
 
 
-def temperature_vs_discharge(df: pd.DataFrame) -> None:
+def temperature_vs_discharge(df: pd.DataFrame, plot_dir: Path) -> None:
     fig, ax = plt.subplots(figsize=(10, 5))
     sns.regplot(x=df["Maximum_Temperature"], y=df["Water_Discharge"], order=4,
                 scatter_kws={"s": 10, "alpha": 0.4, "color": "tab:blue"},
@@ -52,10 +49,10 @@ def temperature_vs_discharge(df: pd.DataFrame) -> None:
     ax.set_xlabel(LABELS["Maximum_Temperature"])
     ax.set_ylabel(LABELS["Water_Discharge"])
     ax.set_title("Maximum temperature and water discharge (4th-order fit)")
-    save(fig, "1.max_temperature_vs_discharge.png")
+    save(fig, plot_dir, "1.max_temperature_vs_discharge.png")
 
 
-def rainfall_vs_discharge(df: pd.DataFrame) -> None:
+def rainfall_vs_discharge(df: pd.DataFrame, plot_dir: Path) -> None:
     fig, ax = plt.subplots(figsize=(10, 5))
     sns.regplot(x=df["Rainfall"], y=df["Water_Discharge"],
                 scatter_kws={"s": 10, "alpha": 0.4, "color": "tab:blue"},
@@ -63,11 +60,11 @@ def rainfall_vs_discharge(df: pd.DataFrame) -> None:
     ax.set_xlabel(LABELS["Rainfall"])
     ax.set_ylabel(LABELS["Water_Discharge"])
     ax.set_title("Rainfall and water discharge (linear fit)")
-    save(fig, "2.rainfall_vs_discharge.png")
+    save(fig, plot_dir, "2.rainfall_vs_discharge.png")
 
 
 def monthly_scatter(df: pd.DataFrame, month: pd.Series, column: str,
-                    title: str, name: str) -> None:
+                    title: str, plot_dir: Path, name: str) -> None:
     rng = np.random.default_rng(42)
     jitter = rng.uniform(-0.12, 0.12, len(df))  # keeps the points from stacking
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -76,10 +73,11 @@ def monthly_scatter(df: pd.DataFrame, month: pd.Series, column: str,
     ax.set_ylabel(LABELS[column])
     ax.set_title(title)
     ax.grid(alpha=0.25, linestyle="--")
-    save(fig, name)
+    save(fig, plot_dir, name)
 
 
-def monthly_rainfall_summary(df: pd.DataFrame, month: pd.Series) -> None:
+def monthly_rainfall_summary(df: pd.DataFrame, month: pd.Series,
+                             plot_dir: Path) -> None:
     mean_rain = df.groupby(month)["Rainfall"].mean().reindex(MONTHS, fill_value=0)
     rainy_days = (df["Rainfall"] > 0).groupby(month).sum().reindex(MONTHS, fill_value=0)
 
@@ -101,10 +99,11 @@ def monthly_rainfall_summary(df: pd.DataFrame, month: pd.Series) -> None:
     ax2.set_title("Days with any rainfall (trace included), 2012-2021")
     ax2.grid(axis="y", linestyle="--", alpha=0.6)
 
-    save(fig, "5.monthly_rainfall_summary_10_Years.png")
+    save(fig, plot_dir, "5.monthly_rainfall_summary_10_Years.png")
 
 
-def monthly_max_temperature(df: pd.DataFrame, month: pd.Series) -> None:
+def monthly_max_temperature(df: pd.DataFrame, month: pd.Series,
+                            plot_dir: Path) -> None:
     groups = [df.loc[month == m, "Maximum_Temperature"] for m in MONTHS]
     fig, ax = plt.subplots(figsize=(12, 6))
     ax.boxplot(groups, positions=list(MONTHS), widths=0.6)
@@ -112,27 +111,32 @@ def monthly_max_temperature(df: pd.DataFrame, month: pd.Series) -> None:
     ax.set_ylabel(LABELS["Maximum_Temperature"])
     ax.set_title("Maximum temperature by month, 2012-2021")
     ax.grid(axis="y", alpha=0.25, linestyle="--")
-    save(fig, "6.monthly_max_temperature_summary_10_years.png")
+    save(fig, plot_dir, "6.monthly_max_temperature_summary_10_years.png")
 
 
-def main() -> None:
-    PLOT_DIR.mkdir(parents=True, exist_ok=True)
-    df = pd.read_csv(DATA_PATH, parse_dates=["Date"])
+def run(clean_path: Path = config.CLEAN_PATH,
+        plot_dir: Path = config.EDA_PLOT_DIR) -> None:
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    df = pd.read_csv(clean_path, parse_dates=["Date"])
     month = df["Date"].dt.month
 
     summary = df.drop(columns="Date").describe().T
-    summary.to_csv(PLOT_DIR.parent / "data_summary.csv")
+    summary.to_csv(plot_dir.parent / "data_summary.csv")
 
-    temperature_vs_discharge(df)
-    rainfall_vs_discharge(df)
+    temperature_vs_discharge(df, plot_dir)
+    rainfall_vs_discharge(df, plot_dir)
     monthly_scatter(df, month, "Water_Discharge",
                     "Monthly distribution of water discharge, Nowshera, 2012-2021",
-                    "3.monthly_discharge.png")
+                    plot_dir, "3.monthly_discharge.png")
     monthly_scatter(df, month, "Rainfall",
                     "Monthly distribution of daily rainfall, 2012-2021",
-                    "4.monthly_rainfall.png")
-    monthly_rainfall_summary(df, month)
-    monthly_max_temperature(df, month)
+                    plot_dir, "4.monthly_rainfall.png")
+    monthly_rainfall_summary(df, month, plot_dir)
+    monthly_max_temperature(df, month, plot_dir)
+
+
+def main() -> None:
+    run()
 
 
 if __name__ == "__main__":

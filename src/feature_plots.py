@@ -11,22 +11,20 @@ matplotlib.use("Agg")  # save to file, no window
 import matplotlib.pyplot as plt
 import pandas as pd
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-FEATURES_PATH = PROJECT_ROOT / "data" / "features.csv"
-PLOT_DIR = PROJECT_ROOT / "result" / "feature_plots"
-DPI = 300
+import config
+from feature_generation import load_features
 
 # first day of each month in a non-leap year
 MONTH_START = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
 
 
-def day_of_year_encoding(df: pd.DataFrame) -> None:
+def day_of_year_encoding(df: pd.DataFrame, plot_dir: Path) -> None:
     doy = df.index.day_of_year
     by_day = (df.assign(day_of_year=doy)
                 .groupby("day_of_year")
                 .agg(sin=("DayOfYear_sin", "first"),
                      cos=("DayOfYear_cos", "first"),
-                     discharge=("Water_Discharge", "mean")))
+                     discharge=(config.TARGET, "mean")))
 
     fig, (ax1, ax2) = plt.subplots(
         1, 2, figsize=(14, 5.5), gridspec_kw={"width_ratios": [1.5, 1]})
@@ -59,15 +57,21 @@ def day_of_year_encoding(df: pd.DataFrame) -> None:
     cbar.set_label("Mean discharge on that day (m³/s)")
 
     fig.tight_layout()
-    fig.savefig(PLOT_DIR / "day_of_year_encoding.png", dpi=DPI, bbox_inches="tight")
+    fig.savefig(plot_dir / "day_of_year_encoding.png",
+                dpi=config.FIGURE_DPI, bbox_inches="tight")
     plt.close(fig)
     print("saved day_of_year_encoding.png")
 
 
+def run(features_path: Path = config.FEATURES_PATH,
+        plot_dir: Path = config.FEATURE_PLOT_DIR) -> None:
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    df = load_features(features_path)
+    day_of_year_encoding(df, plot_dir)
+
+
 def main() -> None:
-    PLOT_DIR.mkdir(parents=True, exist_ok=True)
-    df = pd.read_csv(FEATURES_PATH, parse_dates=["Date"], index_col="Date")
-    day_of_year_encoding(df)
+    run()
 
 
 if __name__ == "__main__":

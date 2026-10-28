@@ -10,18 +10,13 @@ Cleaning steps, each confirmed against the raw file:
      non-breaking space; the whitespace is stripped.
   2. Rainfall: 271 entries are written as text (trace / Trace / TRACE / Tr /
      TR). A trace amount is set to 0.05 mm.
-  3. Average_Temperature: in the sheet this is =AVERAGE(max, min). Excel skips
-     cells stored as text, so on the 15 days where a temperature was text the
-     "average" is just the other temperature. It is recomputed as (max+min)/2.
 Any other unreadable value raises an error instead of being repaired.
 """
 from pathlib import Path
 
 import pandas as pd
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-RAW_PATH = PROJECT_ROOT / "data" / "flood_data.xlsx"
-CLEAN_PATH = PROJECT_ROOT / "data" / "flood_clean_data.csv"
+import config
 
 TRACE_LABELS = {"trace", "tr"}
 TRACE_MM = 0.05
@@ -33,12 +28,6 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
 
     for col in TEMP_COLS:
         df[col] = pd.to_numeric(df[col].astype(str).str.strip())
-
-    sheet_avg = df["Average_Temperature"]
-    df["Average_Temperature"] = ((df["Maximum_Temperature"]
-                                  + df["Minimum_Temperature"]) / 2).round(2)
-    changed = (df["Average_Temperature"] - sheet_avg).abs() > 0.01
-    print(f"Average_Temperature recomputed, rows that changed: {changed.sum()}")
 
     rain = df["Rainfall"].astype(str).str.strip().str.lower()
     is_trace = rain.isin(TRACE_LABELS)
@@ -59,12 +48,19 @@ def check(df: pd.DataFrame) -> None:
         raise ValueError("Dates are duplicated or the daily record has gaps")
 
 
-def main() -> None:
-    df = pd.read_excel(RAW_PATH)
+def run(raw_path: Path = config.RAW_PATH,
+        clean_path: Path = config.CLEAN_PATH) -> pd.DataFrame:
+    df = pd.read_excel(raw_path)
     df = clean(df)
     check(df)
-    df.to_csv(CLEAN_PATH, index=False)
-    print(f"{len(df)} rows saved to {CLEAN_PATH}")
+    clean_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(clean_path, index=False)
+    print(f"{len(df)} rows saved to {clean_path}")
+    return df
+
+
+def main() -> None:
+    run()
 
 
 if __name__ == "__main__":
