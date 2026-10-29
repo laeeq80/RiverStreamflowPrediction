@@ -16,6 +16,7 @@ src/
   modelling.py            the six models, metrics, compare_models()
   reporting.py            result tables and figures
   Experiment1.py          six models without lag features
+  Experiment2.py          seven lag combinations, best one per model
   pipeline.py             runs the stages above in order
 result/                   created when the scripts run
 ```
@@ -34,7 +35,13 @@ python pipeline.py --steps all
 
 python Experiment1.py                    # defaults from config.py
 python Experiment1.py --seeds 42 21 --models ridge rf
+
+python Experiment2.py                    # window 10, results in result/experiment2
+python Experiment2.py --window 3         # same experiment at another window
 ```
+
+Experiment 2 chooses each model's lag combination on validation years
+(train 2012-2017, validate 2018-2019) and scores it once on 2020-2021.
 
 Models for `--models`: rf, xgb, svm, ridge, ann, lstm.
 

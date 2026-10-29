@@ -4,7 +4,8 @@ This file builds, trains and scores models. It never reads or writes files:
 the experiment scripts pass the data in and decide what to save.
 
 Main entry points
-  time_split(X, y)           split in time order into train and test
+  time_split(X, y)           split in time order into train and test (by share)
+  date_split(X, y, last_day) split in time order at a date
   compare_models(...)        fit the chosen models, score them on the test part
   get_metrics(obs, sim)      the scores used throughout the project
 
@@ -22,14 +23,16 @@ Metrics
   High_PBIAS  PBIAS on those same days
 """
 import json
+import re
 
 import keras
 import numpy as np
 import pandas as pd
 import xgboost as xgb
 from keras.callbacks import EarlyStopping
-from keras.layers import LSTM, BatchNormalization, Dense, Dropout, Input
-from keras.models import Sequential
+from keras.layers import (LSTM, BatchNormalization, Concatenate, Dense,
+                          Dropout, Input)
+from keras.models import Model, Sequential
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import Ridge
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
@@ -48,6 +51,12 @@ def time_split(X: pd.DataFrame, y: pd.Series,
     """First part of the days for training, the rest for testing."""
     split = int(len(X) * train_fraction)
     return X.iloc[:split], X.iloc[split:], y.iloc[:split], y.iloc[split:]
+
+
+def date_split(X: pd.DataFrame, y: pd.Series, last_train_day):
+    """Days up to and including last_train_day train; the later days are scored."""
+    train = X.index <= pd.Timestamp(last_train_day)
+    return X[train], X[~train], y[train], y[~train]
 
 
 # ===================== METRICS =====================
@@ -160,27 +169,90 @@ def ann(X_train, y_train, X_test, seed):
     return model.predict(X_te, verbose=0).flatten(), {}
 
 
+LAG_COLUMN = re.compile(r"^(?P<name>.+)_lag_(?P<k>\d+)$")
+
+
+def _split_lag_columns(columns):
+    """Separate same-day columns from lag columns named like Rainfall_lag_3.
+
+    Returns (same-day columns, {variable: window}). Every variable must have
+    the lags 1..window without gaps.
+    """
+    same_day, lags = [], {}
+    for col in columns:
+        match = LAG_COLUMN.match(col)
+        if match:
+            lags.setdefault(match["name"], []).append(int(match["k"]))
+        else:
+            same_day.append(col)
+    windows = {}
+    for name, ks in lags.items():
+        if sorted(ks) != list(range(1, len(ks) + 1)):
+            raise ValueError(f"Lags of {name} are not 1..{len(ks)}: {sorted(ks)}")
+        windows[name] = len(ks)
+    if len(set(windows.values())) > 1:
+        raise ValueError(f"The LSTM needs one window for all variables: {windows}")
+    return same_day, windows
+
+
+def _lag_sequences(X: pd.DataFrame, variables, window):
+    """Array (days, window, variables), oldest day first, newest day last."""
+    return np.stack(
+        [X[[f"{v}_lag_{k}" for k in range(window, 0, -1)]].values
+         for v in variables], axis=2)
+
+
 def lstm(X_train, y_train, X_test, seed):
-    # With same-day inputs only, each sample is a single time step.
-    # (Sequences of past days are added when lag features are introduced.)
+    """LSTM. Without lag columns each sample is the single day being predicted.
+
+    With lag columns the past days are read as a sequence (oldest to newest,
+    one channel per lagged variable) and the same-day columns enter through a
+    small dense branch, so the LSTM sees the same information as the other
+    models.
+    """
     keras.utils.set_random_seed(seed)
-    x_scaler, y_scaler = MinMaxScaler(), MinMaxScaler()
-    X_tr = x_scaler.fit_transform(X_train)
-    X_te = x_scaler.transform(X_test)
+    same_day, windows = _split_lag_columns(X_train.columns)
+    y_scaler = MinMaxScaler()
     y_tr = y_scaler.fit_transform(np.asarray(y_train).reshape(-1, 1)).flatten()
 
-    X_tr = X_tr.reshape(len(X_tr), 1, -1)
-    X_te = X_te.reshape(len(X_te), 1, -1)
+    if not windows:
+        x_scaler = MinMaxScaler()
+        X_tr = x_scaler.fit_transform(X_train).reshape(len(X_train), 1, -1)
+        X_te = x_scaler.transform(X_test).reshape(len(X_test), 1, -1)
+        model = Sequential([
+            Input(shape=(1, X_tr.shape[2])),
+            LSTM(64, return_sequences=True),
+            Dropout(0.2),
+            LSTM(32),
+            Dropout(0.2),
+            Dense(32, activation="relu"),
+            Dense(1),
+        ])
+    else:
+        variables = list(windows)
+        window = windows[variables[0]]
+        seq_tr = _lag_sequences(X_train, variables, window)
+        seq_te = _lag_sequences(X_test, variables, window)
+        for i in range(len(variables)):       # one scale per variable, from training days
+            scaler = MinMaxScaler().fit(seq_tr[:, :, i].reshape(-1, 1))
+            for seq in (seq_tr, seq_te):
+                seq[:, :, i] = scaler.transform(
+                    seq[:, :, i].reshape(-1, 1)).reshape(len(seq), window)
+        aux_scaler = MinMaxScaler()
+        aux_tr = aux_scaler.fit_transform(X_train[same_day])
+        aux_te = aux_scaler.transform(X_test[same_day])
 
-    model = Sequential([
-        Input(shape=(1, X_tr.shape[2])),
-        LSTM(64, return_sequences=True),
-        Dropout(0.2),
-        LSTM(32),
-        Dropout(0.2),
-        Dense(32, activation="relu"),
-        Dense(1),
-    ])
+        seq_in = Input(shape=(window, len(variables)))
+        x = LSTM(64, return_sequences=True)(seq_in)
+        x = Dropout(0.2)(x)
+        x = LSTM(32)(x)
+        x = Dropout(0.2)(x)
+        aux_in = Input(shape=(len(same_day),))
+        a = Dense(32, activation="relu")(aux_in)
+        merged = Dense(32, activation="relu")(Concatenate()([x, a]))
+        model = Model(inputs=[seq_in, aux_in], outputs=Dense(1)(merged))
+        X_tr, X_te = [seq_tr, aux_tr], [seq_te, aux_te]
+
     _fit_network(model, X_tr, y_tr)
     scaled = model.predict(X_te, verbose=0).reshape(-1, 1)
     return y_scaler.inverse_transform(scaled).flatten(), {}
