@@ -3,26 +3,25 @@
 Every model gets the same-day inputs (config.BASE_FEATURES) plus the past
 `window` days of the variables in one lag combination. Seven combinations are
 compared for each of the six models (Random Forest, XGBoost, SVM, Ridge
-Regression, ANN, LSTM).
+Regression, ANN, LSTM), which gives 6 x 7 = 42 model-combination pairs.
 
 How the choice is made without touching the test years
-  1. Validation: for every combination, each model is trained on 2012-2017 and
-     scored on 2018-2019. Nothing from 2020-2021 is loaded at this stage.
+  1. Validation: for every pair, the model is trained on 2012-2017 and scored
+     on 2018-2019. Nothing from 2020-2021 is loaded at this stage.
   2. Selection: for each model, the combination with the highest validation
-     NSE is the best one. If other combinations are within the noise of it
-     (0.002 NSE, or the spread over seeds if larger) the one with the fewest
-     lagged variables is selected.
-  3. Test: each model is retrained on 2012-2019 with its selected combination
-     and scored once on 2020-2021.
+     NSE (mean over seeds for ANN and LSTM) is selected.
+  3. Test: every pair is retrained on 2012-2019 and scored on 2020-2021. The
+     full test table is reported; the selected pair of each model is marked.
+     The test scores are never used for the selection.
 
 Reads   data/features.csv
 Writes  result/experiment2/experiment2_results.xlsx
-        result/experiment2/predictions.csv        (test years, selected models)
+        result/experiment2/predictions.csv        (test years, selected pairs)
         result/experiment2/plots/*.png
 
 Examples
   python Experiment2.py
-  python Experiment2.py --window 3          # robustness check at another window
+  python Experiment2.py --window 3          # sensitivity check at another window
   python Experiment2.py --seeds 42 21 --models ridge rf
 """
 import argparse
@@ -36,7 +35,6 @@ import reporting
 from feature_generation import load_features, make_lags
 
 DEFAULT_WINDOW = 10      # past days given for each lagged variable
-TIE_TOLERANCE = 0.002    # NSE difference treated as noise
 
 DISCHARGE = "Water_Discharge"
 RAINFALL = "Rainfall"
@@ -88,64 +86,61 @@ def validate_combinations(df, window, models, seeds) -> pd.DataFrame:
 
 # ===================== 2. SELECTION =====================
 def choose_combinations(val_summary: pd.DataFrame) -> pd.DataFrame:
-    """Best combination per model, and the simplest one within noise of it."""
+    """For each model, the combination with the highest validation NSE."""
     rows = []
     for model, group in val_summary.groupby("Model", sort=False):
         best = group.loc[group["NSE"].idxmax()]
-        spread = best["NSE_std"] if pd.notna(best["NSE_std"]) else 0.0
-        tolerance = max(TIE_TOLERANCE, spread)
-
-        near = group[group["NSE"] >= best["NSE"] - tolerance].copy()
-        near["lagged_variables"] = near["Combination"].map(
-            lambda c: len(COMBINATIONS[c]))
-        pick = near.sort_values(["lagged_variables", "NSE"],
-                                ascending=[True, False]).iloc[0]
         rows.append({
             "Model": model,
-            "Best combination (validation NSE)": best["Combination"],
-            "Best validation NSE": best["NSE"],
-            "Selected combination": pick["Combination"],
-            "Selected validation NSE": pick["NSE"],
-            "Noise tolerance": tolerance,
-            "Combinations within noise": len(near),
+            "Selected combination": best["Combination"],
+            "Validation NSE": best["NSE"],
         })
     return pd.DataFrame(rows)
 
 
 # ===================== 3. TEST =====================
-def test_selected(df, window, selected: dict, seeds):
-    """Retrain each model on 2012-2019 with its selected combination and score
-    it once on the test years."""
-    test_runs, predictions = [], None
-    for model, combination in selected.items():
-        print(f"\n===== test | {model} | {combination} =====")
-        X, y = build_inputs(df, COMBINATIONS[combination], window)
+def test_all(df, window, models, seeds):
+    """Retrain every model-combination pair on 2012-2019 and score it once on
+    the test years. Returns the runs and, per combination, the predictions."""
+    test_runs, predictions = [], {}
+    y_dev = y_test = None
+    for name, variables in COMBINATIONS.items():
+        print(f"\n===== test | {name} | window {window} =====")
+        X, y = build_inputs(df, variables, window)
         X_dev, X_test, y_dev, y_test = modelling.date_split(
             X, y, config.VALIDATION_END)
         runs, preds = modelling.compare_models(
-            X_dev, y_dev, X_test, y_test, models=[model], seeds=seeds)
-        runs.insert(0, "Combination", combination)
+            X_dev, y_dev, X_test, y_test, models=models, seeds=seeds)
+        runs.insert(0, "Combination", name)
         test_runs.append(runs)
+        predictions[name] = preds
 
-        if predictions is None:
-            predictions = pd.DataFrame({"Observed": y_test})
-            references = {
-                "Reference: seasonal average":
-                    modelling.seasonal_average(y_dev, y_test.index),
-                "Reference: yesterday's discharge":
-                    modelling.yesterday(df[config.TARGET], y_test.index),
-            }
-        for column in preds.columns.drop("Observed"):
-            predictions[f"{column} - {combination}"] = preds[column]
-
-    reference_runs = []
-    for name, pred in references.items():
-        reference_runs.append({
-            "Combination": "", "Model": name, "Seed": "",
-            **modelling.get_metrics(y_test.values, pred), "Best_params": ""})
-        predictions[name] = pred
+    # reference forecasts: same for every combination, so added once
+    references = {
+        "Reference: seasonal average":
+            modelling.seasonal_average(y_dev, y_test.index),
+        "Reference: yesterday's discharge":
+            modelling.yesterday(df[config.TARGET], y_test.index),
+    }
+    reference_runs = [{
+        "Combination": "", "Model": name, "Seed": "",
+        **modelling.get_metrics(y_test.values, pred), "Best_params": ""}
+        for name, pred in references.items()]
     test_runs.append(pd.DataFrame(reference_runs))
-    return pd.concat(test_runs, ignore_index=True), predictions
+    return pd.concat(test_runs, ignore_index=True), predictions, references
+
+
+def selected_predictions(predictions, references, selected: dict):
+    """Test-year predictions of each model with its selected combination."""
+    first = next(iter(predictions.values()))
+    out = pd.DataFrame({"Observed": first["Observed"]})
+    for model, combination in selected.items():
+        for column in predictions[combination].columns:
+            if column != "Observed" and column.startswith(model):
+                out[f"{column} - {combination}"] = predictions[combination][column]
+    for name, pred in references.items():
+        out[name] = pred
+    return out
 
 
 # ===================== RUN =====================
@@ -163,56 +158,77 @@ def run(features_path: Path = config.FEATURES_PATH,
     print(f"window {window} days | train 2012-{config.TRAIN_END[:4]} | "
           f"validation up to {config.VALIDATION_END} | test after that")
 
+    # validation and selection (test years not used)
     val_runs = validate_combinations(df, window, models, seeds)
     val_summary = reporting.summarise(val_runs, by=["Model", "Combination"])
     choice = choose_combinations(val_summary)
     selected = dict(zip(choice["Model"], choice["Selected combination"]))
 
-    test_runs, predictions = test_selected(df, window, selected, seeds)
+    # test: all 42 pairs, selected ones marked
+    test_runs, predictions, references = test_all(df, window, models, seeds)
     test_summary = reporting.summarise(test_runs, by=["Model", "Combination"])
+    test_summary.insert(2, "Selected", [
+        "yes" if selected.get(m) == c else ""
+        for m, c in zip(test_summary["Model"], test_summary["Combination"])])
+    test_selected = test_summary[test_summary["Selected"] == "yes"]
+    test_selected = pd.concat(
+        [test_selected, test_summary[test_summary["Combination"] == ""]],
+        ignore_index=True)
 
-    # one table: validation choice next to the test score
-    test_scores = test_summary.set_index("Model")
+    # one table: validation choice next to its test score
+    test_scores = test_summary.set_index(["Model", "Combination"])
     for metric in ("NSE", "RMSE", "MAE", "KGE", "PBIAS"):
-        choice[f"Test {metric}"] = choice["Model"].map(test_scores[metric])
+        choice[f"Test {metric}"] = [
+            test_scores.loc[(m, c), metric]
+            for m, c in zip(choice["Model"], choice["Selected combination"])]
 
     settings = pd.DataFrame({"Setting": [
         "Window (days per lagged variable)", "Same-day inputs", "Train years",
-        "Validation years", "Test years", "Neural network seeds",
-        "Tie tolerance (NSE)"], "Value": [
+        "Validation years", "Test years", "Neural network seeds"], "Value": [
         window, ", ".join(config.BASE_FEATURES),
         f"2012 to {config.TRAIN_END[:4]}",
         f"{int(config.TRAIN_END[:4]) + 1} to {config.VALIDATION_END[:4]}",
         f"{int(config.VALIDATION_END[:4]) + 1} to 2021",
-        ", ".join(map(str, seeds)), TIE_TOLERANCE]})
+        ", ".join(map(str, seeds))]})
 
     reporting.write_excel(out_dir / "experiment2_results.xlsx", {
         "Best per model": choice,
         "Validation summary": val_summary,
-        "Test (selected)": test_summary,
+        "Test summary (all)": test_summary,
+        "Test (selected)": test_selected,
         "Validation runs": val_runs,
         "Test runs": test_runs,
         "Settings": settings,
     })
-    predictions.round(3).to_csv(out_dir / "predictions.csv")
+    chosen_predictions = selected_predictions(predictions, references, selected)
+    chosen_predictions.round(3).to_csv(out_dir / "predictions.csv")
 
     plot_dir = out_dir / "plots"
-    table = val_summary.pivot(index="Model", columns="Combination",
-                              values="NSE")
-    table = table.reindex(index=models, columns=list(COMBINATIONS))
+    val_table = val_summary.pivot(index="Model", columns="Combination",
+                                  values="NSE")
+    val_table = val_table.reindex(index=models, columns=list(COMBINATIONS))
     reporting.plot_score_heatmap(
-        table, selected, plot_dir / "validation_nse_heatmap.png",
+        val_table, selected, plot_dir / "validation_nse_heatmap.png",
         title=f"Validation NSE by lag combination (window {window} days); "
               "outlined = selected",
         colorbar_label="Validation NSE (2018-2019)")
-    reporting.plot_predictions(predictions, plot_dir)
+    test_table = test_summary[test_summary["Combination"] != ""].pivot(
+        index="Model", columns="Combination", values="NSE")
+    test_table = test_table.reindex(index=models, columns=list(COMBINATIONS))
+    reporting.plot_score_heatmap(
+        test_table, selected, plot_dir / "test_nse_heatmap.png",
+        title=f"Test NSE by lag combination (window {window} days); "
+              "outlined = selected on validation",
+        colorbar_label="Test NSE (2020-2021)")
+    reporting.plot_predictions(chosen_predictions, plot_dir)
 
     print("\nValidation NSE (mean over seeds):")
-    print(table.round(3).to_string())
+    print(val_table.round(3).to_string())
+    print("\nTest NSE (mean over seeds):")
+    print(test_table.round(3).to_string())
     print("\nBest lag combination for each model:")
-    print(choice[["Model", "Best combination (validation NSE)",
-                  "Selected combination", "Test NSE"]]
-          .round(3).to_string(index=False))
+    print(choice[["Model", "Selected combination", "Validation NSE",
+                  "Test NSE"]].round(3).to_string(index=False))
     print(f"\nResults saved to {out_dir}")
     return choice
 
@@ -238,3 +254,4 @@ def main(argv=None) -> None:
 
 if __name__ == "__main__":
     main()
+

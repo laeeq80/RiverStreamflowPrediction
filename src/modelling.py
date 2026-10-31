@@ -154,6 +154,8 @@ def ann(X_train, y_train, X_test, seed):
     scaler = MinMaxScaler()
     X_tr = scaler.fit_transform(X_train)
     X_te = scaler.transform(X_test)
+    y_scaler = MinMaxScaler()       # discharge scaled as in the LSTM
+    y_tr = y_scaler.fit_transform(np.asarray(y_train).reshape(-1, 1)).flatten()
 
     model = Sequential([
         Input(shape=(X_tr.shape[1],)),
@@ -165,8 +167,9 @@ def ann(X_train, y_train, X_test, seed):
         Dense(32, activation="relu"),
         Dense(1),
     ])
-    _fit_network(model, X_tr, np.asarray(y_train))
-    return model.predict(X_te, verbose=0).flatten(), {}
+    _fit_network(model, X_tr, y_tr)
+    scaled = model.predict(X_te, verbose=0).reshape(-1, 1)
+    return y_scaler.inverse_transform(scaled).flatten(), {}
 
 
 LAG_COLUMN = re.compile(r"^(?P<name>.+)_lag_(?P<k>\d+)$")
