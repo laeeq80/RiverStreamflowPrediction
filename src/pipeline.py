@@ -6,16 +6,19 @@
   feature_plots  feature_plots.py       plot of the day-of-year features
   experiment1    Experiment1.py         six models without lag features
   experiment2    Experiment2.py         seven lag combinations, best one per model
+  experiment3    Experiment3.py         lag window length, best one per model
 
-With no arguments the first four stages run. The experiments train models, so
-they only run when asked for (Experiment 1 takes a few minutes, Experiment 2
-about an hour).
+With no arguments the first four stages run. The experiments train and tune
+models, so they only run when asked for (Experiment 1 takes some time, and
+Experiments 2 and 3 take several hours each). Experiment 3 needs the results
+of Experiment 2.
 
 Examples
   python pipeline.py
   python pipeline.py --steps eda features
   python pipeline.py --steps experiment1
   python pipeline.py --steps experiment2
+  python pipeline.py --steps experiment3
   python pipeline.py --steps all
 """
 import argparse
@@ -29,6 +32,7 @@ STEPS = {
     "feature_plots": "feature_plots",
     "experiment1": "Experiment1",
     "experiment2": "Experiment2",
+    "experiment3": "Experiment3",
 }
 DEFAULT_STEPS = ["preprocess", "eda", "features", "feature_plots"]
 
