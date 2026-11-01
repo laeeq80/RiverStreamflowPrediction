@@ -6,13 +6,20 @@ the experiment scripts pass the data in and decide what to save.
 Main entry points
   time_split(X, y)           split in time order into train and test (by share)
   date_split(X, y, last_day) split in time order at a date
-  compare_models(...)        fit the chosen models, score them on the test part
+  compare_models(...)        tune and fit the chosen models, score them on the test part
   get_metrics(obs, sim)      the scores used throughout the project
 
-Every model function has the same call: (X_train, y_train, X_test, seed) and
-returns (predictions, settings). Random Forest, XGBoost, SVM and Ridge are
-tuned with GridSearchCV on time-ordered folds and ignore the seed. ANN and
-LSTM use fixed settings and are run once per seed.
+Tuning (the same for all six models)
+  Each model has a small grid of settings. Every setting is scored with
+  TimeSeriesSplit (config.CV_SPLITS time-ordered folds) on the training days
+  only, using NSE, and the best setting is kept. Scalers are fitted inside each
+  fold. Random Forest, XGBoost, SVM and Ridge use GridSearchCV; ANN and LSTM
+  run the same search with a loop (config.RANDOM_STATE as the seed).
+
+Seeds
+  After tuning, Random Forest, XGBoost, ANN and LSTM are fitted once per seed
+  with the best setting (the seeds in config.NN_SEEDS) and reported as mean and
+  std. SVM and Ridge have no randomness and are fitted once.
 
 Metrics
   NSE         Nash-Sutcliffe efficiency (same value as R2), 1 is perfect
@@ -22,6 +29,7 @@ Metrics
   High_RMSE   RMSE on the days when observed discharge is in the top 5%
   High_PBIAS  PBIAS on those same days
 """
+import itertools
 import json
 import re
 
@@ -91,65 +99,140 @@ def get_metrics(obs, sim,
     }
 
 
-# ===================== TUNED MODELS =====================
-def _tune(estimator, grid, X_train, y_train, X_test):
+# ===================== TUNING GRIDS =====================
+RF_GRID = {
+    "n_estimators": [100, 160],
+    "max_depth": [None, 10, 20],
+    "min_samples_split": [2, 5],
+}
+XGB_GRID = {
+    "n_estimators": [100, 160],
+    "learning_rate": [0.05, 0.1],
+    "max_depth": [3, 5, 7],
+    "subsample": [0.8, 1.0],
+}
+SVM_GRID = {
+    "svm__C": [1, 10, 100],
+    "svm__gamma": ["scale", 0.1, 0.01],
+    "svm__epsilon": [0.1, 0.2],
+}
+RIDGE_GRID = {"ridge__alpha": [0.01, 0.1, 1, 10, 100]}
+# 8 settings each; the first value of each is not special, the earlier fixed
+# network (128 units, dropout 0.3 and 0.2, learning rate 0.001) is one of them
+ANN_GRID = {
+    "units": [64, 128],                       # first layer; then half, quarter
+    "dropout": [(0.1, 0.1), (0.3, 0.2)],      # after first and second layer
+    "learning_rate": [0.001, 0.01],
+}
+LSTM_GRID = {
+    "units": [32, 64],                        # first LSTM; then half
+    "dropout": [0.1, 0.2],
+    "learning_rate": [0.001, 0.01],
+}
+
+
+# ===================== CLASSICAL MODELS =====================
+def _grid_search(estimator, grid, X_train, y_train):
     cv = TimeSeriesSplit(n_splits=config.CV_SPLITS)
     search = GridSearchCV(estimator, grid, cv=cv, scoring="r2", n_jobs=-1)
     search.fit(X_train, y_train)
-    return search.best_estimator_.predict(X_test), search.best_params_
+    return search.best_params_
 
 
-def random_forest(X_train, y_train, X_test, seed=None):
-    grid = {
-        "n_estimators": [100, 160],
-        "max_depth": [None, 10, 20],
-        "min_samples_split": [2, 5],
-    }
-    model = RandomForestRegressor(random_state=config.RANDOM_STATE)
-    return _tune(model, grid, X_train, y_train, X_test)
+def _fit_estimator(estimator, params, X_train, y_train, X_test):
+    estimator.set_params(**params)
+    estimator.fit(X_train, y_train)
+    return estimator.predict(X_test)
 
 
-def xgboost_model(X_train, y_train, X_test, seed=None):
-    grid = {
-        "n_estimators": [100, 160],
-        "learning_rate": [0.05, 0.1],
-        "max_depth": [3, 5, 7],
-        "subsample": [0.8, 1.0],
-    }
-    model = xgb.XGBRegressor(objective="reg:squarederror",
-                             random_state=config.RANDOM_STATE)
-    return _tune(model, grid, X_train, y_train, X_test)
+def _random_forest(seed):
+    return RandomForestRegressor(random_state=seed)
 
 
-def svm(X_train, y_train, X_test, seed=None):
-    grid = {
-        "svm__C": [1, 10, 100],
-        "svm__gamma": ["scale", 0.1, 0.01],
-        "svm__epsilon": [0.1, 0.2],
-    }
-    pipe = Pipeline([("scaler", MinMaxScaler()), ("svm", SVR(kernel="rbf"))])
-    return _tune(pipe, grid, X_train, y_train, X_test)
+def _xgboost(seed):
+    return xgb.XGBRegressor(objective="reg:squarederror", random_state=seed)
 
 
-def ridge(X_train, y_train, X_test, seed=None):
-    grid = {"ridge__alpha": [0.01, 0.1, 1, 10, 100]}
-    pipe = Pipeline([("scaler", MinMaxScaler()), ("ridge", Ridge())])
-    return _tune(pipe, grid, X_train, y_train, X_test)
+def _svm():
+    return Pipeline([("scaler", MinMaxScaler()), ("svm", SVR(kernel="rbf"))])
+
+
+def _ridge():
+    return Pipeline([("scaler", MinMaxScaler()), ("ridge", Ridge())])
+
+
+def tune_random_forest(X_train, y_train, verbose=True):
+    return _grid_search(_random_forest(config.RANDOM_STATE), RF_GRID,
+                        X_train, y_train)
+
+
+def fit_random_forest(X_train, y_train, X_test, params, seed):
+    return _fit_estimator(_random_forest(seed), params, X_train, y_train, X_test)
+
+
+def tune_xgboost(X_train, y_train, verbose=True):
+    return _grid_search(_xgboost(config.RANDOM_STATE), XGB_GRID,
+                        X_train, y_train)
+
+
+def fit_xgboost(X_train, y_train, X_test, params, seed):
+    return _fit_estimator(_xgboost(seed), params, X_train, y_train, X_test)
+
+
+def tune_svm(X_train, y_train, verbose=True):
+    return _grid_search(_svm(), SVM_GRID, X_train, y_train)
+
+
+def fit_svm(X_train, y_train, X_test, params, seed=None):
+    return _fit_estimator(_svm(), params, X_train, y_train, X_test)
+
+
+def tune_ridge(X_train, y_train, verbose=True):
+    return _grid_search(_ridge(), RIDGE_GRID, X_train, y_train)
+
+
+def fit_ridge(X_train, y_train, X_test, params, seed=None):
+    return _fit_estimator(_ridge(), params, X_train, y_train, X_test)
 
 
 # ===================== NEURAL NETWORKS =====================
-def _fit_network(model, X_train, y_train):
+def _fit_network(model, X_train, y_train, learning_rate):
     # Keras holds out the last 10% of the training rows for early stopping,
     # so the validation days come after the training days in time.
     stop = EarlyStopping(monitor="val_loss", patience=10,
                          restore_best_weights=True)
-    model.compile(optimizer="adam", loss="mse")
+    model.compile(optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
+                  loss="mse")
     model.fit(X_train, y_train, validation_split=0.1, epochs=200,
               batch_size=32, callbacks=[stop], verbose=0)
     return model
 
 
-def ann(X_train, y_train, X_test, seed):
+def _tune_network(label, predict, grid, X_train, y_train, verbose=True):
+    """Same search as GridSearchCV: every setting is fitted on the time-ordered
+    folds of the training days and scored with NSE on the fold that follows."""
+    cv = TimeSeriesSplit(n_splits=config.CV_SPLITS)
+    keys = list(grid)
+    settings = list(itertools.product(*grid.values()))
+    best_params, best_score = None, -np.inf
+    for i, values in enumerate(settings, start=1):
+        params = dict(zip(keys, values))
+        scores = []
+        for fit_rows, score_rows in cv.split(X_train):
+            pred = predict(X_train.iloc[fit_rows], y_train.iloc[fit_rows],
+                           X_train.iloc[score_rows], params,
+                           config.RANDOM_STATE)
+            scores.append(nse(y_train.iloc[score_rows].values, pred))
+        mean_score = float(np.mean(scores))
+        if verbose:
+            print(f"  [{label} tuning] setting {i}/{len(settings)} {params} "
+                  f"-> NSE {mean_score:.4f}")
+        if mean_score > best_score:
+            best_params, best_score = params, mean_score
+    return best_params
+
+
+def _ann_predict(X_train, y_train, X_test, params, seed):
     keras.utils.set_random_seed(seed)
     scaler = MinMaxScaler()
     X_tr = scaler.fit_transform(X_train)
@@ -157,19 +240,30 @@ def ann(X_train, y_train, X_test, seed):
     y_scaler = MinMaxScaler()       # discharge scaled as in the LSTM
     y_tr = y_scaler.fit_transform(np.asarray(y_train).reshape(-1, 1)).flatten()
 
+    units = params["units"]
+    first_dropout, second_dropout = params["dropout"]
     model = Sequential([
         Input(shape=(X_tr.shape[1],)),
-        Dense(128, activation="relu"),
+        Dense(units, activation="relu"),
         BatchNormalization(),
-        Dropout(0.3),
-        Dense(64, activation="relu"),
-        Dropout(0.2),
-        Dense(32, activation="relu"),
+        Dropout(first_dropout),
+        Dense(units // 2, activation="relu"),
+        Dropout(second_dropout),
+        Dense(units // 4, activation="relu"),
         Dense(1),
     ])
-    _fit_network(model, X_tr, y_tr)
+    _fit_network(model, X_tr, y_tr, params["learning_rate"])
     scaled = model.predict(X_te, verbose=0).reshape(-1, 1)
-    return y_scaler.inverse_transform(scaled).flatten(), {}
+    return y_scaler.inverse_transform(scaled).flatten()
+
+
+def tune_ann(X_train, y_train, verbose=True):
+    return _tune_network("ANN", _ann_predict, ANN_GRID, X_train, y_train,
+                         verbose)
+
+
+def fit_ann(X_train, y_train, X_test, params, seed):
+    return _ann_predict(X_train, y_train, X_test, params, seed)
 
 
 LAG_COLUMN = re.compile(r"^(?P<name>.+)_lag_(?P<k>\d+)$")
@@ -205,7 +299,7 @@ def _lag_sequences(X: pd.DataFrame, variables, window):
          for v in variables], axis=2)
 
 
-def lstm(X_train, y_train, X_test, seed):
+def _lstm_predict(X_train, y_train, X_test, params, seed):
     """LSTM. Without lag columns each sample is the single day being predicted.
 
     With lag columns the past days are read as a sequence (oldest to newest,
@@ -218,17 +312,21 @@ def lstm(X_train, y_train, X_test, seed):
     y_scaler = MinMaxScaler()
     y_tr = y_scaler.fit_transform(np.asarray(y_train).reshape(-1, 1)).flatten()
 
+    first = params["units"]
+    second = first // 2
+    dropout = params["dropout"]
+
     if not windows:
         x_scaler = MinMaxScaler()
         X_tr = x_scaler.fit_transform(X_train).reshape(len(X_train), 1, -1)
         X_te = x_scaler.transform(X_test).reshape(len(X_test), 1, -1)
         model = Sequential([
             Input(shape=(1, X_tr.shape[2])),
-            LSTM(64, return_sequences=True),
-            Dropout(0.2),
-            LSTM(32),
-            Dropout(0.2),
-            Dense(32, activation="relu"),
+            LSTM(first, return_sequences=True),
+            Dropout(dropout),
+            LSTM(second),
+            Dropout(dropout),
+            Dense(second, activation="relu"),
             Dense(1),
         ])
     else:
@@ -246,31 +344,43 @@ def lstm(X_train, y_train, X_test, seed):
         aux_te = aux_scaler.transform(X_test[same_day])
 
         seq_in = Input(shape=(window, len(variables)))
-        x = LSTM(64, return_sequences=True)(seq_in)
-        x = Dropout(0.2)(x)
-        x = LSTM(32)(x)
-        x = Dropout(0.2)(x)
+        x = LSTM(first, return_sequences=True)(seq_in)
+        x = Dropout(dropout)(x)
+        x = LSTM(second)(x)
+        x = Dropout(dropout)(x)
         aux_in = Input(shape=(len(same_day),))
-        a = Dense(32, activation="relu")(aux_in)
-        merged = Dense(32, activation="relu")(Concatenate()([x, a]))
+        a = Dense(second, activation="relu")(aux_in)
+        merged = Dense(second, activation="relu")(Concatenate()([x, a]))
         model = Model(inputs=[seq_in, aux_in], outputs=Dense(1)(merged))
         X_tr, X_te = [seq_tr, aux_tr], [seq_te, aux_te]
 
-    _fit_network(model, X_tr, y_tr)
+    _fit_network(model, X_tr, y_tr, params["learning_rate"])
     scaled = model.predict(X_te, verbose=0).reshape(-1, 1)
-    return y_scaler.inverse_transform(scaled).flatten(), {}
+    return y_scaler.inverse_transform(scaled).flatten()
+
+
+def tune_lstm(X_train, y_train, verbose=True):
+    return _tune_network("LSTM", _lstm_predict, LSTM_GRID, X_train, y_train,
+                         verbose)
+
+
+def fit_lstm(X_train, y_train, X_test, params, seed):
+    return _lstm_predict(X_train, y_train, X_test, params, seed)
 
 
 # ===================== MODEL REGISTRY =====================
+# name -> (tune, fit). tune(X_train, y_train, verbose) returns the best
+# setting; fit(X_train, y_train, X_test, setting, seed) returns predictions.
 MODELS = {
-    "Random Forest": random_forest,
-    "XGBoost": xgboost_model,
-    "SVM": svm,
-    "Ridge Regression": ridge,
-    "ANN": ann,
-    "LSTM": lstm,
+    "Random Forest": (tune_random_forest, fit_random_forest),
+    "XGBoost": (tune_xgboost, fit_xgboost),
+    "SVM": (tune_svm, fit_svm),
+    "Ridge Regression": (tune_ridge, fit_ridge),
+    "ANN": (tune_ann, fit_ann),
+    "LSTM": (tune_lstm, fit_lstm),
 }
-NEURAL_MODELS = ("ANN", "LSTM")      # run once per seed
+# fitted once per seed (the others have no randomness)
+SEEDED_MODELS = ("Random Forest", "XGBoost", "ANN", "LSTM")
 
 # short names for the command line
 MODEL_ALIASES = {
@@ -295,13 +405,14 @@ def yesterday(y: pd.Series, test_index: pd.DatetimeIndex):
 # ===================== COMPARISON =====================
 def compare_models(X_train, y_train, X_test, y_test, models=None, seeds=None,
                    references=None, verbose=True):
-    """Fit each model on the training part and score it on the test part.
+    """Tune each model on the training part, fit it, and score it on the test part.
 
     models      names from MODELS (default: all six)
-    seeds       seeds for the neural networks (default: config.NN_SEEDS)
+    seeds       seeds for RF, XGBoost, ANN and LSTM (default: config.NN_SEEDS)
     references  optional {name: predictions} scored in the same table
-    Returns (runs, predictions): one row per model and seed with all metrics,
-    and the test-period predictions of every model next to the observed values.
+    Returns (runs, predictions): one row per model and seed with all metrics
+    and the tuned setting, and the test-period predictions of every model next
+    to the observed values.
     """
     models = list(models) if models else list(MODELS)
     seeds = list(seeds) if seeds else list(config.NN_SEEDS)
@@ -316,24 +427,29 @@ def compare_models(X_train, y_train, X_test, y_test, models=None, seeds=None,
         return scores
 
     for name in models:
-        runner = MODELS[name]
-        if name in NEURAL_MODELS:
+        tune, fit = MODELS[name]
+        if verbose:
+            print(f"[{name}] tuning")
+        params = tune(X_train, y_train, verbose)
+        settings = json.dumps(params)
+        if verbose:
+            print(f"  best setting: {settings}")
+
+        if name in SEEDED_MODELS:
             seed_preds = []
             for seed in seeds:
                 if verbose:
                     print(f"[{name}] seed {seed}")
-                pred, _ = runner(X_train, y_train, X_test, seed)
-                scores = record(name, seed, pred)
+                pred = fit(X_train, y_train, X_test, params, seed)
+                scores = record(name, seed, pred, settings)
                 seed_preds.append(pred)
                 if verbose:
                     print(f"  NSE {scores['NSE']:.4f} | RMSE {scores['RMSE']:.1f}")
             # the mean over seeds is for the plots and the predictions file only
             predictions[f"{name} (mean of seeds)"] = np.mean(seed_preds, axis=0)
         else:
-            if verbose:
-                print(f"[{name}]")
-            pred, params = runner(X_train, y_train, X_test, None)
-            scores = record(name, "", pred, json.dumps(params))
+            pred = fit(X_train, y_train, X_test, params, None)
+            scores = record(name, "", pred, settings)
             predictions[name] = pred
             if verbose:
                 print(f"  NSE {scores['NSE']:.4f} | RMSE {scores['RMSE']:.1f}")
