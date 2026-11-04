@@ -7,11 +7,12 @@
   experiment1    Experiment1.py         six models without lag features
   experiment2    Experiment2.py         seven lag combinations, best one per model
   experiment3    Experiment3.py         lag window length, best one per model
+  experiment4    Experiment4.py         predicting 3, 5 and 7 days ahead
 
 With no arguments the first four stages run. The experiments train and tune
 models, so they only run when asked for (Experiment 1 takes some time, and
-Experiments 2 and 3 take several hours each). Experiment 3 needs the results
-of Experiment 2.
+Experiments 2, 3 and 4 take several hours each). Experiment 3 needs the results
+of Experiment 2, and Experiment 4 needs the results of Experiment 3.
 
 Examples
   python pipeline.py
@@ -19,6 +20,7 @@ Examples
   python pipeline.py --steps experiment1
   python pipeline.py --steps experiment2
   python pipeline.py --steps experiment3
+  python pipeline.py --steps experiment4
   python pipeline.py --steps all
 """
 import argparse
@@ -33,6 +35,7 @@ STEPS = {
     "experiment1": "Experiment1",
     "experiment2": "Experiment2",
     "experiment3": "Experiment3",
+    "experiment4": "Experiment4",
 }
 DEFAULT_STEPS = ["preprocess", "eda", "features", "feature_plots"]
 
